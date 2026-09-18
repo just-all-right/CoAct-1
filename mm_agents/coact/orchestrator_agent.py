@@ -16,6 +16,17 @@ from .coding_agent import TerminalProxyAgent, CODER_SYSTEM_MESSAGE, CONVERSATION
 
 
 class OrchestratorAgent(MultimodalConversableAgent):
+    """任务编排器的基类。
+
+    这个类本质上是一个“调度员”：
+    - 它把用户的高层目标拆成可以调用的工具；
+    - 根据 mode 决定当前场景允许哪些能力；
+    - 在 LLM 需要时，把任务交给 GUI Agent 或 Coding Agent 去执行。
+
+    对新人来说，最重要的理解是：
+    这里不直接完成具体操作，而是负责“决定调用谁，以及哪些能力开放给模型”。
+    """
+
     CALL_GUI_AGENT_TOOL = {
         "type": "function",
         "function": {
@@ -82,6 +93,8 @@ class OrchestratorAgent(MultimodalConversableAgent):
         mimic_human_return: bool = True,
         **kwargs: Any,
     ):
+        # 这个初始化阶段会先调用基类，建立通用的对话式 Agent 能力；
+        # 接着根据 mode 只暴露某些工具，让模型具备不同能力组合。
         super().__init__(
             name,
             is_termination_msg=is_termination_msg,
@@ -98,17 +111,29 @@ class OrchestratorAgent(MultimodalConversableAgent):
             self.update_system_message(system_message)
 
         if mode in ["hybrid", "coact_opensource_sft"]:
+            # 混合模式：允许 LLM 同时调用 GUI 和编程能力。
             self.update_tool_signature(self.CALL_CODING_AGENT_TOOL, is_remove=False)
             self.update_tool_signature(self.CALL_GUI_AGENT_TOOL, is_remove=False)
         elif mode == "coact_cua_only":
+            # 仅 GUI 模式：适合需要视觉/桌面操作的任务。
             self.update_tool_signature(self.CALL_GUI_AGENT_TOOL, is_remove=False)
         elif mode == "coact_coding_only":
+            # 仅编程模式：适合只需要代码执行和文件编辑的场景。
             self.update_tool_signature(self.CALL_CODING_AGENT_TOOL, is_remove=False)
 
 
 
 class OrchestratorUserProxyAgent(MultimodalConversableAgent):
-    """(In preview) A proxy agent for the captain agent, that can execute code and provide feedback to the other agents."""
+    """真正执行任务的“代理代理”。
+
+    它承担三件关键事：
+    1. 对外暴露工具函数（例如 call_gui_operator / call_programmer）；
+    2. 维护一个桌面环境，允许 Agent 进行屏幕操作或代码执行；
+    3. 在任务完成后，把中间过程整理成可读结果返回给上一层。
+
+    这个类更接近运行时执行器，而不是纯粹的推理器：
+    它会实际连接 DesktopEnv、启动 GUI/编程子代理，并收集执行结果。
+    """
 
     DEFAULT_AUTO_REPLY = "Please continue the task. Note that the user's task is: {user_instruction}. If everything is done, please reply me only with 'TERMINATE'. If the task is impossible to solve, please reply me only with 'INFEASIBLE'."
 
@@ -149,6 +174,8 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         remote_ip_port: str = None,
     ):
         description = description if description is not None else ""
+        # 一个 Agent 可以“说话”和“调用工具”，但它需要先有统一的对话基类能力。
+        # 这里把用户任务作为默认自动回复的一部分，确保对话在任务没有明确终止时仍能继续推进。
         super().__init__(
             name=name,
             system_message=system_message,
@@ -161,6 +188,8 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
             default_auto_reply=default_auto_reply.format(user_instruction=user_instruction),
             description=description,
         )
+        # 这里把两个工具注册成 Agent 可调用的函数。
+        # LLM 看到这些工具名后，可以决定“我现在应该让 GUI 去点按钮，还是让程序员去执行代码”。
         self.register_function(
             function_map={
                 "call_gui_operator": lambda **args: self._call_gui_operator(**args, screen_width=screen_width, screen_height=screen_height),
@@ -177,6 +206,10 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         self.region = region
         self.client_password = client_password
         self.task_start_time = 0.0
+        # DesktopEnv 是最核心的运行环境，类似一个可控的虚拟桌面：
+        # - 可以获取截图；
+        # - 可以模拟鼠标/键盘操作；
+        # - 可以在容器/VM 中执行命令。
         self.use_remote_env = True if remote_ip_port is not None else False
         if self.use_remote_env:
             provider_config = ProviderConfig(
@@ -231,6 +264,7 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         self.task_start_time = task_start_time
 
     def reset(self, task_config: dict[str, Any], sleep_time: int = 20):
+        # 每次新的任务开始前，都要把虚拟桌面恢复到初始状态，避免前一个任务留下污染。
         if self.use_remote_env:
             obs = self.env.reset_docker_remote_fc_v1(task_config=task_config, sleep_time=sleep_time)
         else:
@@ -240,7 +274,14 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         return obs
 
     def _call_gui_operator(self, task: str, screen_width: int = 1920, screen_height: int = 1080) -> str:
-        """Run a GUI agent to solve the task."""
+        """使用 GUI Agent 完成桌面操作类任务。
+
+        这里的思路是：
+        - 把当前子任务写入磁盘日志；
+        - 选择对应的 GUI 模型实现（OpenAI/Claude/UI-TARS/OpenCUA 等）；
+        - 让这个模型在虚拟桌面上执行点击、输入、滚动等动作；
+        - 最后把结果和截图返回，供上层继续决策。
+        """
         cua_path = os.path.join(self.history_save_dir, f'cua_output_{self.cua_call_count}')
         screen_size = self.env.controller.get_vm_screen_size()
         width = screen_size["width"]
@@ -252,6 +293,7 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         
         cua_function = None
         if self.cua_model == "computer-use-preview":
+            # OpenAI 视觉/桌面操作模型
             cua_function = run_openai_cua
         elif 'claude' in self.cua_model and 'anthropic' not in self.cua_model:
             cua_function = run_claude_cua
@@ -283,6 +325,7 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
             self.cua_call_count += 1
 
         except Exception:
+            # 任何一次 GUI 调用失败，都不会直接让程序崩掉，而是记录详细 traceback 给上层。
             return f"# Call GUI operator error: {traceback.format_exc()}"
 
         if "TERMINATE" in result:
@@ -292,15 +335,26 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         return f"# Response from the GUI operator: \n{result}\n<img data:image/png;base64,{base64.b64encode(screenshot).decode('utf-8')}>"
     
     def _call_programmer(self, task: str) -> str:
-        """Run a coding agent to solve the task."""
+        """使用编程 Agent 完成代码类任务。
+
+        它的执行链路大致是：
+        1. 读取当前屏幕截图；
+        2. 启动一个 Coding Agent 和一个终端执行器；
+        3. 让 Agent 生成并运行代码；
+        4. 对话历史中提取关键摘要，避免长日志直接喧宾夺主；
+        5. 返回给上层一个简洁、可读的结论。
+        """
         default_auto_reply = "I'm a code interpreter and I can only execute your code or end the conversation. Did you check your result carefully and make sure the things out of the user's instruction are not changed? If you think the task completed, please reply me only with 'TERMINATE'."
         try:
+            # 当前桌面截图会作为上下文发给编程代理，帮助它理解可视化界面状态。
             screenshot = self.env.controller.get_screenshot()
             coding_agent = MultimodalConversableAgent(
                 name="coding_agent",
                 llm_config=self.coding_model_config,
                 system_message=CODER_SYSTEM_MESSAGE.format(CLIENT_PASSWORD=self.client_password),
             )
+            # TerminalProxyAgent 才是真正执行命令的组件：
+            # 它会在虚拟环境里运行脚本、观察输出，并在合适时机终止对话。
             code_interpreter = TerminalProxyAgent(
                 name="code_interpreter",
                 human_input_mode="NEVER",
@@ -344,6 +398,7 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
             self.coding_call_count += 1
 
             # Review the group chat history
+            # 代码执行过程可能很长，因此这里使用一个小型 summarizer 把对话整理成更短的结论。
             summarizer = ConversableAgent(
                 name="summarizer",
                 llm_config=self.summarizer_model_config,
