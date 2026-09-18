@@ -1,6 +1,11 @@
 """Run a short, non-destructive GUI-Plus smoke test against an existing DesktopEnv."""
 
 import argparse
+import sys
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mm_agents.coact.cua_agent.qwen_gui_cua_agent import run_qwen_gui_cua
 from desktop_env.desktop_env import DesktopEnv

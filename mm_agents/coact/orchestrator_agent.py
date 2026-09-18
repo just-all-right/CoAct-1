@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
 import traceback
-from google import genai
+# from google import genai
 from typing import Any, Callable, Literal, Optional, Union
 from desktop_env.desktop_env import DesktopEnv
 from desktop_env.providers import ProviderConfig
@@ -11,14 +13,6 @@ from .autogen.llm_config import LLMConfig
 from .autogen.agentchat.conversable_agent import ConversableAgent
 from .autogen.agentchat.contrib.multimodal_conversable_agent import MultimodalConversableAgent
 
-from .cua_agent import (
-    run_claude_cua,
-    run_claude_cua_bedrock,
-    run_openai_cua,
-    run_opencua_cua,
-    run_qwen_gui_cua,
-    run_uitars_cua,
-)
 from .coding_agent import TerminalProxyAgent, CODER_SYSTEM_MESSAGE, CONVERSATION_REVIEW_PROMPT
 
 
@@ -301,16 +295,28 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         cua_function = None
         if self.cua_model == "computer-use-preview":
             # OpenAI 视觉/桌面操作模型
+            from .cua_agent.openai_cua_agent import run_openai_cua
+
             cua_function = run_openai_cua
         elif 'claude' in self.cua_model and 'anthropic' not in self.cua_model:
+            from .cua_agent.claude_cua_agent import run_claude_cua
+
             cua_function = run_claude_cua
         elif 'anthropic' in self.cua_model:
+            from .cua_agent.claude_cua_agent_bedrock import run_claude_cua_bedrock
+
             cua_function = run_claude_cua_bedrock
         elif 'UI-TARS-1.5' in self.cua_model:
+            from .cua_agent.uitars_cua_agent import run_uitars_cua
+
             cua_function = run_uitars_cua
         elif 'OpenCUA' in self.cua_model:
+            from .cua_agent.opencua_cua_agent import run_opencua_cua
+
             cua_function = run_opencua_cua
         elif self.cua_model.startswith("gui-plus"):
+            from .cua_agent.qwen_gui_cua_agent import run_qwen_gui_cua
+
             cua_function = run_qwen_gui_cua
 
         if cua_function is None:

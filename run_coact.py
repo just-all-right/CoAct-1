@@ -318,6 +318,7 @@ if __name__ == "__main__":
     logger.setLevel(log_level)
 
     # 日志按时间分文件，方便追踪任务运行过程。
+    os.makedirs("logs", exist_ok=True)
     datetime_str: str = datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
     file_handler = logging.FileHandler(
         os.path.join("logs", "normal-{:}.log".format(datetime_str)), encoding="utf-8"
