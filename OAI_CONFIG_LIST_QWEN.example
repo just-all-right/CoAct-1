@@ -1,0 +1,14 @@
+[
+  {
+    "model": "qwen3.8-flash",
+    "api_type": "openai",
+    "api_key": "YOUR_DASHSCOPE_API_KEY",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "tags": [
+      "qwen3.8-flash",
+      "orchestrator",
+      "coding",
+      "summarizer"
+    ]
+  }
+]

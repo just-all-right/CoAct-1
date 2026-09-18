@@ -3,3 +3,4 @@ from .claude_cua_agent_bedrock import run_claude_cua_bedrock
 from .claude_cua_agent import run_claude_cua
 from .uitars_cua_agent import run_uitars_cua
 from .opencua_cua_agent import run_opencua_cua
+from .qwen_gui_cua_agent import run_qwen_gui_cua

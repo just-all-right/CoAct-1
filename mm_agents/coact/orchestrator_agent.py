@@ -11,7 +11,14 @@ from .autogen.llm_config import LLMConfig
 from .autogen.agentchat.conversable_agent import ConversableAgent
 from .autogen.agentchat.contrib.multimodal_conversable_agent import MultimodalConversableAgent
 
-from .cua_agent import run_openai_cua, run_claude_cua, run_claude_cua_bedrock, run_uitars_cua, run_opencua_cua
+from .cua_agent import (
+    run_claude_cua,
+    run_claude_cua_bedrock,
+    run_openai_cua,
+    run_opencua_cua,
+    run_qwen_gui_cua,
+    run_uitars_cua,
+)
 from .coding_agent import TerminalProxyAgent, CODER_SYSTEM_MESSAGE, CONVERSATION_REVIEW_PROMPT
 
 
@@ -303,6 +310,11 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
             cua_function = run_uitars_cua
         elif 'OpenCUA' in self.cua_model:
             cua_function = run_opencua_cua
+        elif self.cua_model.startswith("gui-plus"):
+            cua_function = run_qwen_gui_cua
+
+        if cua_function is None:
+            return f"# Unsupported GUI Operator model: {self.cua_model}"
 
         try:
             history_inputs, result, cost = cua_function(self.env,
@@ -330,8 +342,10 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
 
         if "TERMINATE" in result:
             result = result.replace("TERMINATE", "").strip()
+        elif "UNEXPECTED" in result:
+            result = result.strip()
         else:
-            result = f"I've reach the max steps and have to stop. Please check the screenshot and see what to do next."
+            result = f"OTHER: {result}"
         return f"# Response from the GUI operator: \n{result}\n<img data:image/png;base64,{base64.b64encode(screenshot).decode('utf-8')}>"
     
     def _call_programmer(self, task: str) -> str:
