@@ -1,17 +1,21 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from desktop_env.desktop_env import DesktopEnv
 from openai import OpenAI
 
 from .gui_plus_prompt import GUI_PLUS_SYSTEM_PROMPT, validate_gui_plus_prompt
 
+if TYPE_CHECKING:
+    from desktop_env.desktop_env import DesktopEnv
 
-DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+# DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_BASE_URL = "https://llm-nop9yjkchw70a7mr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 
 def parse_tool_call(text: str) -> dict:
     start = text.find("<tool_call>")

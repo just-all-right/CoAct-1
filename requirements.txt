@@ -42,6 +42,7 @@ odfpy
 openai
 func-timeout
 beautifulsoup4
+tldextract
 dashscope
 google-generativeai
 PyYaml

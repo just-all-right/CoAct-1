@@ -182,6 +182,9 @@ branch_flag
 branch-config
 *.syncthing.*.tmp
 cache
+!mm_agents/coact/autogen/cache/
+!mm_agents/coact/autogen/cache/**
+mm_agents/coact/autogen/cache/__pycache__/
 version.folder
 at_processing
 
