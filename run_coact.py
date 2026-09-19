@@ -73,7 +73,7 @@ def config() -> argparse.Namespace:
     parser.add_argument("--sleep_after_execution", type=float, default=1.0)
     parser.add_argument("--region", type=str, default="us-east-1")
     parser.add_argument("--client_password", type=str, default="password")
-    parser.add_argument("--remote_ip_port", type=str, default="")
+    parser.add_argument("--remote_ip_port", type=str, default=None)
 
     # agent config
     # mode 决定代理的能力组合：混合模式/纯 GUI / 纯编程等。

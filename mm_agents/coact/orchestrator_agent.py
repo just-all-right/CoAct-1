@@ -211,7 +211,7 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         # - 可以获取截图；
         # - 可以模拟鼠标/键盘操作；
         # - 可以在容器/VM 中执行命令。
-        self.use_remote_env = True if remote_ip_port is not None else False
+        self.use_remote_env = bool(remote_ip_port)
         if self.use_remote_env:
             provider_config = ProviderConfig(
                 host=remote_ip_port.split(":")[0],
