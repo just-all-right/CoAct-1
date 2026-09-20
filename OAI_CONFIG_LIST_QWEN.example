@@ -10,5 +10,15 @@
       "coding",
       "summarizer"
     ]
+  },
+  {
+    "model": "gui-plus-2026-02-26",
+    "api_type": "openai",
+    "api_key": "YOUR_DASHSCOPE_API_KEY",
+    "base_url": "https://llm-nop9yjkchw70a7mr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "tags": [
+      "gui-plus",
+      "cua"
+    ]
   }
 ]

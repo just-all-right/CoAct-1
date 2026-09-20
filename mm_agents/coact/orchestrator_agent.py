@@ -252,6 +252,28 @@ class OrchestratorUserProxyAgent(MultimodalConversableAgent):
         self.summarizer_model_config = LLMConfig.from_json(path=llm_config_path).where(model=summarizer_model)
         self.cua_model = cua_model
 
+        # GUI-Plus 接线：调用方没有显式传 cua_client_config 时（run_coact.py 默认就是这种情况），
+        # 从 --oai_config_path 指向的 LLM 配置文件里读取 model 匹配的条目（如 gui-plus-2026-02-26），
+        # 取出 api_key / base_url，这样只配置 OAI_CONFIG_LIST_QWEN 即可，无需依赖 DASHSCOPE_API_KEY 环境变量。
+        # 读取失败或 key 是未填写的占位符时，保持原行为：回退到 run_qwen_gui_cua 里的 os.getenv("DASHSCOPE_API_KEY")。
+        if not self.cua_client_config and str(cua_model).startswith("gui-plus") and llm_config_path:
+            try:
+                cua_entry = LLMConfig.from_json(path=llm_config_path).where(model=cua_model).config_list[0]
+            except (FileNotFoundError, ValueError, IndexError):
+                cua_entry = None
+            if cua_entry is not None:
+                _get = cua_entry.get if isinstance(cua_entry, dict) else (lambda k: getattr(cua_entry, k, None))
+                api_key = _get("api_key")
+                if hasattr(api_key, "get_secret_value"):  # pydantic SecretStr
+                    api_key = api_key.get_secret_value()
+                base_url = _get("base_url")
+                # 跳过未展开的环境变量引用（"${...}"）和未填写的示例占位符，让它们走环境变量回退，
+                # 避免拿着无效 key 去请求 API 得到难以定位的鉴权错误。
+                if api_key and not api_key.startswith("${") and api_key != "YOUR_DASHSCOPE_API_KEY":
+                    self.cua_client_config = {"api_key": api_key}
+                    if base_url:
+                        self.cua_client_config["base_url"] = str(base_url)  # pydantic HttpUrl -> str
+
         if video_reflection:
             self.genai_client = genai_client
             if self.genai_client is None:
