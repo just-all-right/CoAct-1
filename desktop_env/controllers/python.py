@@ -1,7 +1,10 @@
+import base64
 import json
 import logging
 import os
 import random
+import shlex
+import uuid
 from typing import Any, Dict, Optional
 import time
 import traceback
@@ -178,6 +181,89 @@ class PythonController:
     
     def run_python_script(self, script: str, timeout: int = 90) -> Optional[Dict[str, Any]]:
         """Execute a Python script via the server's /run_python_script endpoint."""
+        # The VM image used by these experiments has no /run_python_script route at all: it
+        # answers with a Flask 404 page, which then reaches the coding agent as "error
+        # output" and burns a turn. Stage the script and run it through /execute instead.
+        # COACT_USE_VM_SCRIPT_ENDPOINTS=1 restores the dedicated endpoints for VM images
+        # whose server has them (see run_bash_script for the same switch).
+        if os.environ.get("COACT_USE_VM_SCRIPT_ENDPOINTS"):
+            return self._run_python_script_via_endpoint(script, timeout)
+        return self._run_python_script_via_execute(script, timeout)
+
+    def _run_python_script_via_execute(self, script: str, timeout: int) -> Dict[str, Any]:
+        """Run a Python script on the VM through the /execute endpoint."""
+        script_path = "/tmp/coact_python_{}.py".format(uuid.uuid4().hex[:8])
+        encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        # Write the script out of band (base64 survives any quoting inside it), run it with a
+        # hard timeout, then remove it. `rc` is captured before rm so the exit status is kept.
+        command_script = (
+            "printf %s {payload} | base64 -d > {path} && timeout -k 5 {timeout} python3 {path}; "
+            "rc=$?; rm -f {path}; exit $rc"
+        ).format(payload=shlex.quote(encoded), path=script_path, timeout=int(timeout))
+
+        for _ in range(self.retry_times):
+            try:
+                response = requests.post(
+                    self.http_server + "/execute",
+                    headers={'Content-Type': 'application/json'},
+                    json={
+                        "command": ["/bin/bash", "-lc", command_script],
+                        "shell": False,
+                    },
+                    timeout=timeout + 10,
+                )
+            except requests.exceptions.ReadTimeout:
+                return {
+                    "status": "error",
+                    "message": "Script execution timed out",
+                    "output": "",
+                    "error": f"Timed out after {timeout} seconds",
+                    "returncode": -1,
+                }
+            except Exception:
+                logger.error("An error occurred while trying to execute the python script: %s", traceback.format_exc())
+                logger.info("Retrying to execute command.")
+                time.sleep(self.retry_interval)
+                continue
+
+            if response.status_code != 200:
+                # The request reached the VM, so the run itself failed; resending would run
+                # the script a second time.
+                logger.error("Failed to execute python script. Status code: %d, response: %s",
+                             response.status_code, response.text)
+                return {
+                    "status": "error",
+                    "message": f"Failed to execute python script (HTTP {response.status_code})",
+                    "output": "",
+                    "error": response.text,
+                    "returncode": -1,
+                }
+
+            result = response.json()
+            returncode = result.get("returncode", -1)
+            # /execute splits stderr into its own field and reports status "success" even for
+            # a failing exit code; merge the stream and derive status from the real rc.
+            output = (result.get("output") or "") + (result.get("error") or "")
+            logger.info("Python script executed through /execute with return code: %d", returncode)
+            return {
+                "status": "success" if returncode == 0 else "error",
+                "message": output,
+                "output": output,
+                "error": "",
+                "returncode": returncode,
+            }
+
+        logger.error("Failed to execute python script.")
+        return {
+            "status": "error",
+            "message": "Failed to execute command.",
+            "output": "",
+            "error": "Retry limit reached.",
+            "returncode": -1,
+        }
+
+    def _run_python_script_via_endpoint(self, script: str, timeout: int) -> Optional[Dict[str, Any]]:
+        """Run a Python script through the VM's dedicated /run_python_script endpoint."""
         payload = json.dumps({"code": script, "timeout": timeout})
 
         for _ in range(self.retry_times):
@@ -232,6 +318,91 @@ class PythonController:
         :param working_dir: Working directory for script execution (optional)
         :return: Dictionary with status, output, error, and returncode, or None if failed
         """
+        # The VM image used by these experiments does expose /run_bash_script, but its
+        # handler calls an undefined `_append_event` *after* the script has already run, so
+        # the endpoint answers 500 and the real stdout is discarded. Retrying that endpoint
+        # executes the script again on every attempt, so run it through /execute instead:
+        # exactly one execution, genuine output. COACT_USE_VM_SCRIPT_ENDPOINTS=1 switches
+        # this and run_python_script back to the dedicated endpoints once the VM image is
+        # fixed.
+        if os.environ.get("COACT_USE_VM_SCRIPT_ENDPOINTS"):
+            return self._run_bash_script_via_endpoint(script, timeout, working_dir)
+        return self._run_bash_script_via_execute(script, timeout, working_dir)
+
+    def _run_bash_script_via_execute(self, script: str, timeout: int,
+                                     working_dir: Optional[str]) -> Dict[str, Any]:
+        """Execute a bash script through the VM's /execute endpoint."""
+        command_script = script
+        if working_dir:
+            command_script = f"cd {shlex.quote(working_dir)} && {script}"
+
+        for _ in range(self.retry_times):
+            try:
+                response = requests.post(
+                    self.http_server + "/execute",
+                    headers={'Content-Type': 'application/json'},
+                    json={
+                        "command": ["/bin/bash", "-lc", command_script],
+                        "shell": False,
+                    },
+                    timeout=timeout + 100,  # Add buffer to HTTP timeout
+                )
+            except requests.exceptions.ReadTimeout:
+                # The script may have finished inside the VM while we stopped listening, so
+                # sending it again would repeat its side effects.
+                logger.error("Bash script execution timed out")
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error": f"Script execution timed out after {timeout} seconds",
+                    "returncode": -1,
+                    "duration": None,
+                }
+            except Exception as e:
+                logger.error("An error occurred while trying to execute the bash script: %s", e)
+                logger.info("Retrying to execute bash script.")
+                time.sleep(self.retry_interval)
+                continue
+
+            if response.status_code != 200:
+                # A non-200 means the request reached the VM and the run itself blew up
+                # (its handler caps the subprocess at 120 seconds). Resending would execute
+                # the script a second time, so report the failure instead of retrying.
+                logger.error("Failed to execute bash script. Status code: %d, response: %s",
+                             response.status_code, response.text)
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error": response.text,
+                    "returncode": -1,
+                    "duration": None,
+                }
+
+            result = response.json()
+            returncode = result.get("returncode", -1)
+            # /execute keeps stderr in its own field and reports status "success" even for a
+            # failing exit code, while callers judge success by "status" and read one merged
+            # stream. Normalize to the /run_bash_script contract before handing it back.
+            logger.info("Bash script executed through /execute with return code: %d", returncode)
+            return {
+                "status": "success" if returncode == 0 else "error",
+                "output": (result.get("output") or "") + (result.get("error") or ""),
+                "error": "",
+                "returncode": returncode,
+                "duration": None,
+            }
+
+        logger.error("Failed to execute bash script after %d retries.", self.retry_times)
+        return {
+            "status": "error",
+            "output": "",
+            "error": f"Failed to execute bash script after {self.retry_times} retries",
+            "returncode": -1,
+        }
+
+    def _run_bash_script_via_endpoint(self, script: str, timeout: int,
+                                      working_dir: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Execute a bash script through the VM's /run_bash_script endpoint."""
         payload = json.dumps({
             "script": script,
             "timeout": timeout,
@@ -241,9 +412,9 @@ class PythonController:
         for _ in range(self.retry_times):
             try:
                 response = requests.post(
-                    self.http_server + "/run_bash_script", 
+                    self.http_server + "/run_bash_script",
                     headers={'Content-Type': 'application/json'},
-                    data=payload, 
+                    data=payload,
                     timeout=timeout + 100  # Add buffer to HTTP timeout
                 )
                 if response.status_code == 200:
@@ -251,7 +422,7 @@ class PythonController:
                     logger.info("Bash script executed successfully with return code: %d", result.get("returncode", -1))
                     return result
                 else:
-                    logger.error("Failed to execute bash script. Status code: %d, response: %s", 
+                    logger.error("Failed to execute bash script. Status code: %d, response: %s",
                                 response.status_code, response.text)
                     logger.info("Retrying to execute bash script.")
             except requests.exceptions.ReadTimeout:

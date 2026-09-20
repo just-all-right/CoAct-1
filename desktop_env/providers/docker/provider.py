@@ -160,7 +160,11 @@ class DockerProvider(Provider):
             logger.info("Stopping VM...")
             try:
                 self.container.stop()
-                self.container.remove()
+                # v=True also deletes the anonymous /storage volume the image creates per
+                # container (declared by VOLUME in happysixd/osworld-docker, so it is not in
+                # the volumes= mapping above). Without it every task leaves a ~34GB volume
+                # behind on the docker root filesystem and the disk fills up mid-benchmark.
+                self.container.remove(v=True)
                 time.sleep(WAIT_TIME)
             except Exception as e:
                 logger.error(f"Error stopping container: {e}")
